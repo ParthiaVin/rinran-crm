@@ -1,4 +1,18 @@
 require('dotenv').config();
+
+// --- Security: never sign/verify JWTs with a known, committed secret. ---
+// If JWT_SECRET is missing or a well-known default, generate a strong random
+// secret for this process and warn loudly instead of trusting a public constant.
+{
+  const crypto = require('crypto');
+  const WEAK = new Set(['rinran-secret-change-me', 'cambia-esto-por-un-secreto-seguro', 'changeme', 'secret', '']);
+  if (!process.env.JWT_SECRET || WEAK.has(process.env.JWT_SECRET.trim())) {
+    process.env.JWT_SECRET = crypto.randomBytes(48).toString('hex');
+    console.warn('[SECURITY] JWT_SECRET is unset or a known default — generated a random secret for THIS run only.');
+    console.warn('[SECURITY] Existing sessions will be invalid after a restart. Set a strong JWT_SECRET (e.g. `openssl rand -hex 32`).');
+  }
+}
+
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -15,7 +29,19 @@ const auth = require('./middleware/auth');
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(morgan('dev'));
-app.use(express.json({ limit: '1400mb' }));
+
+// --- Body-size limits: a huge base64 body must not be buffered on public/normal routes ---
+// (the old global 1400mb limit let an anonymous client OOM the server with one request).
+// Tight for auth (tiny payloads); bounded-but-generous for the WhatsApp webhook (may inline
+// media); large only on authenticated media-upload routes (auth runs BEFORE the big parser).
+app.use('/api/auth', express.json({ limit: '64kb' }));
+app.use('/webhook', express.json({ limit: '60mb' }));
+app.use(
+  ['/api/messages/send-file', '/api/messages/send-voice', '/api/messages/broadcast', '/api/auto-reply'],
+  auth,
+  express.json({ limit: '110mb' })
+);
+app.use(express.json({ limit: '12mb' }));
 
 // Public routes
 app.use('/api/auth', require('./routes/auth'));
@@ -87,7 +113,7 @@ app.get('/api/sse', (req, res) => {
   if (!token) return res.status(401).end();
   try {
     const jwt = require('jsonwebtoken');
-    const secret = process.env.JWT_SECRET || 'rinran-secret-change-me';
+    const secret = process.env.JWT_SECRET;
     req.user = jwt.verify(token, secret);
     sseRouter(req, res);
   } catch { res.status(401).end(); }
@@ -336,6 +362,17 @@ setInterval(async () => {
     }
   } catch {}
 }, 30000);
+
+// --- Central error handler: turn uncaught throws and body-parser errors (bad JSON,
+// payload-too-large) into clean JSON responses without leaking stack traces.
+// Note: Express 4 does not route async-handler rejections here — those still need
+// per-handler try/catch or an async wrapper (tracked separately). ---
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error('[error]', req.method, req.originalUrl, '—', err.message);
+  res.status(status).json({ error: status >= 500 ? 'Internal server error' : (err.message || 'Error') });
+});
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Rinran CRM backend running on port ${PORT}`));
