@@ -14,10 +14,15 @@ require('dotenv').config();
 }
 
 const express = require('express');
+// Patches Express so rejected promises from `async` route handlers are forwarded to the
+// error-handling middleware instead of hanging the request forever (Express 4 limitation).
+// Must be required before any routers/route modules are created.
+require('express-async-errors');
 const cors = require('cors');
 const morgan = require('morgan');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const dataDir = path.join(__dirname, '../../data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -35,7 +40,8 @@ app.use(morgan('dev'));
 // Tight for auth (tiny payloads); bounded-but-generous for the WhatsApp webhook (may inline
 // media); large only on authenticated media-upload routes (auth runs BEFORE the big parser).
 app.use('/api/auth', express.json({ limit: '64kb' }));
-app.use('/webhook', express.json({ limit: '60mb' }));
+// Capture the raw body for the webhook so its HMAC signature can be verified below.
+app.use('/webhook', express.json({ limit: '60mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(
   ['/api/messages/send-file', '/api/messages/send-voice', '/api/messages/broadcast', '/api/auto-reply'],
   auth,
@@ -43,9 +49,37 @@ app.use(
 );
 app.use(express.json({ limit: '12mb' }));
 
+// Verify the WAHA webhook's HMAC signature so the public /webhook route isn't anonymous.
+// Enforced only when WEBHOOK_HMAC_SECRET is set (and WAHA is configured with the same key);
+// otherwise the route stays open but a one-time warning is logged.
+const WEBHOOK_HMAC_SECRET = process.env.WEBHOOK_HMAC_SECRET || '';
+let _webhookOpenWarned = false;
+function verifyWebhookHmac(req, res, next) {
+  if (!WEBHOOK_HMAC_SECRET) {
+    if (!_webhookOpenWarned) {
+      _webhookOpenWarned = true;
+      console.warn('[SECURITY] WEBHOOK_HMAC_SECRET is not set — the public /webhook route is UNAUTHENTICATED.');
+      console.warn('[SECURITY] Set WEBHOOK_HMAC_SECRET and configure WAHA webhook hmac.key with the same value.');
+    }
+    return next();
+  }
+  const provided = req.get('X-Webhook-Hmac');
+  const algo = (req.get('X-Webhook-Hmac-Algorithm') || 'sha512').toLowerCase();
+  if (!provided || !req.rawBody) return res.status(401).json({ error: 'invalid signature' });
+  let expected;
+  try { expected = crypto.createHmac(algo, WEBHOOK_HMAC_SECRET).update(req.rawBody).digest('hex'); }
+  catch { return res.status(401).json({ error: 'invalid signature' }); }
+  const a = Buffer.from(provided, 'hex');
+  const b = Buffer.from(expected, 'hex');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ error: 'invalid signature' });
+  }
+  next();
+}
+
 // Public routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/webhook', require('./routes/webhook'));
+app.use('/webhook', verifyWebhookHmac, require('./routes/webhook'));
 app.get('/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
 app.use('/uploads', express.static(uploadsDir, { maxAge: '7d' }));
@@ -159,7 +193,7 @@ app.post('/api/wa/sessions', auth, async (req, res) => {
   const config = {
     noweb: { store: { enabled: true, fullSync: true } },
     ...(auto_webhook ? {
-      webhooks: [{ url: SELF_WEBHOOK, events: ['message', 'message.ack', 'session.status'], enabled: true }]
+      webhooks: [{ url: SELF_WEBHOOK, events: ['message', 'message.ack', 'session.status'], enabled: true, ...(WEBHOOK_HMAC_SECRET ? { hmac: { key: WEBHOOK_HMAC_SECRET } } : {}) }]
     } : {}),
     ...rest.config,
   };
@@ -233,7 +267,7 @@ app.post('/api/wa/sessions/:name/webhook', auth, async (req, res) => {
   try {
     const r = await axios.put(`${WAHA_URL}/api/sessions/${req.params.name}`, {
       config: {
-        webhooks: [{ url: webhookUrl, events: ['message', 'message.ack', 'session.status'], enabled: true }],
+        webhooks: [{ url: webhookUrl, events: ['message', 'message.ack', 'session.status'], enabled: true, ...(WEBHOOK_HMAC_SECRET ? { hmac: { key: WEBHOOK_HMAC_SECRET } } : {}) }],
         noweb: { store: { enabled: true, fullSync: true } },
       }
     }, { headers: { ...wahaHdr(), 'Content-Type': 'application/json' }, timeout: 10000 });
