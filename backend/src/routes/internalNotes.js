@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router({ mergeParams: true });
 const { getDb } = require('../db');
+const { requireContactAccess } = require('../authz');
+
+// Every notes route is scoped to a contact — enforce the caller may access that contact.
+router.use(requireContactAccess('contactId'));
 
 // GET /contacts/:contactId/notes
 router.get('/', (req, res) => {

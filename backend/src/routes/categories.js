@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db');
 const { getLabels, getLabelChats } = require('../whatsapp');
+const { requireAdmin } = require('../authz');
 
 router.get('/', (req, res) => {
   const db = getDb();
@@ -21,7 +22,7 @@ router.get('/wa-labels', async (req, res) => {
 });
 
 // POST /categories/sync-from-wa — pull WA labels → create/update CRM categories → assign to contacts
-router.post('/sync-from-wa', async (req, res) => {
+router.post('/sync-from-wa', requireAdmin, async (req, res) => {
   const db = getDb();
   const SYSTEM_LABEL_IDS = new Set(['1', '2', '3']);
   const delay = ms => new Promise(r => setTimeout(r, ms));
@@ -95,7 +96,7 @@ router.post('/sync-from-wa', async (req, res) => {
   });
 });
 
-router.post('/', (req, res) => {
+router.post('/', requireAdmin, (req, res) => {
   const db = getDb();
   const { name, color } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -108,7 +109,7 @@ router.post('/', (req, res) => {
   }
 });
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAdmin, (req, res) => {
   const db = getDb();
   const { name, color, wa_label_id } = req.body;
   const fields = [], params = [];
@@ -121,7 +122,7 @@ router.patch('/:id', (req, res) => {
   res.json(db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', requireAdmin, (req, res) => {
   const db = getDb();
   db.prepare('DELETE FROM categories WHERE id = ?').run(req.params.id);
   res.json({ ok: true });

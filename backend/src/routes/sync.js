@@ -3,6 +3,7 @@ const router = express.Router();
 const { getDb } = require('../db');
 const { parsePhone } = require('../phoneUtils');
 const { getAllChats, getChatMessages, fromWaId, resolveLid, getContact, getProfilePic, getLabels, getLabelChats } = require('../whatsapp');
+const { requireAdmin } = require('../authz');
 
 const MEDIA_LABELS = {
   image: '[Foto]',
@@ -18,7 +19,7 @@ const state = { running: false, lastSync: null, imported: { contacts: 0, message
 
 router.get('/', (req, res) => res.json(state));
 
-router.post('/', async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
   if (state.running) return res.json({ ok: false, message: 'Sync already in progress' });
   state.running = true;
   state.error = null;
@@ -263,7 +264,7 @@ async function runSync() {
 }
 
 // GET /sync/phonebook — import contacts from WAHA's contact list
-router.get('/phonebook', async (req, res) => {
+router.get('/phonebook', requireAdmin, async (req, res) => {
   try {
     const { getSession } = require('../whatsapp');
     const axios = require('axios');
