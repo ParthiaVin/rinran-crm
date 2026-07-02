@@ -1,4 +1,5 @@
 const { getDb } = require('./db');
+const { decrypt } = require('./secretStore');
 
 async function getSmtpTransporter() {
   const nodemailer = require('nodemailer');
@@ -14,7 +15,7 @@ async function getSmtpTransporter() {
     host: cfg.smtp_host,
     port: parseInt(cfg.smtp_port) || 587,
     secure: parseInt(cfg.smtp_port) === 465,
-    auth: cfg.smtp_user ? { user: cfg.smtp_user, pass: cfg.smtp_pass } : undefined,
+    auth: cfg.smtp_user ? { user: cfg.smtp_user, pass: decrypt(cfg.smtp_pass) } : undefined,
   });
 }
 

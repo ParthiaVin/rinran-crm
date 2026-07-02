@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const { authenticator } = require('otplib');
 const { getDb } = require('../db');
 const authMiddleware = require('../middleware/auth');
+const { encrypt, decrypt } = require('../secretStore');
 
 const secret = () => process.env.JWT_SECRET || 'rinran-secret-change-me';
 
@@ -25,7 +26,7 @@ router.post('/login', (req, res) => {
       return res.status(200).json({ requires_2fa: true });
     }
     authenticator.options = { window: 1 };
-    if (!authenticator.verify({ token: String(totp_code), secret: user.two_fa_secret })) {
+    if (!authenticator.verify({ token: String(totp_code), secret: decrypt(user.two_fa_secret) })) {
       return res.status(401).json({ error: 'Código 2FA incorrecto' });
     }
   }
@@ -63,7 +64,7 @@ router.get('/2fa/setup', authMiddleware, async (req, res) => {
   const secret2fa = authenticator.generateSecret();
   const user = getDb().prepare('SELECT email FROM users WHERE id = ?').get(req.user.id);
   const otpauthUrl = authenticator.keyuri(user.email, 'Rinran CRM', secret2fa);
-  getDb().prepare('UPDATE users SET two_fa_secret = ? WHERE id = ?').run(secret2fa, req.user.id);
+  getDb().prepare('UPDATE users SET two_fa_secret = ? WHERE id = ?').run(encrypt(secret2fa), req.user.id);
   try {
     const QRCode = require('qrcode');
     const qr_data_url = await QRCode.toDataURL(otpauthUrl);
@@ -80,7 +81,7 @@ router.post('/2fa/enable', authMiddleware, (req, res) => {
   const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!user.two_fa_secret) return res.status(400).json({ error: 'Run /2fa/setup first' });
   authenticator.options = { window: 1 };
-  if (!authenticator.verify({ token: String(code), secret: user.two_fa_secret })) {
+  if (!authenticator.verify({ token: String(code), secret: decrypt(user.two_fa_secret) })) {
     return res.status(401).json({ error: 'Código incorrecto' });
   }
   getDb().prepare('UPDATE users SET two_fa_enabled = 1 WHERE id = ?').run(req.user.id);

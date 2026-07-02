@@ -3,8 +3,9 @@ const router = express.Router();
 const express_ref = express;
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
-const { getDb } = require('../db');
+const { getDb, closeDb } = require('../db');
 const { assertPublicHost, assertPublicHttpUrl, safeAxiosOptions } = require('../ssrfGuard');
+const { encrypt, decrypt } = require('../secretStore');
 
 const DEFAULTS = {
   company_name: 'Rinran CRM',
@@ -151,6 +152,8 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../../data/rinra
 router.get('/backup', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
   if (!fs.existsSync(DB_PATH)) return res.status(404).json({ error: 'Base de datos no encontrada' });
+  // Flush the WAL into the main file so the streamed backup is complete/consistent.
+  try { getDb().exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
   const date = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Disposition', `attachment; filename="rinran-backup-${date}.db"`);
   res.setHeader('Content-Type', 'application/octet-stream');
@@ -165,6 +168,27 @@ router.post('/restore', express_ref.raw({ type: 'application/octet-stream', limi
   }
   const tmpPath = DB_PATH + '.restore_tmp';
   fs.writeFileSync(tmpPath, buf);
+
+  // Validate it is a real SQLite DB with this app's schema — not just the magic bytes.
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const test = new DatabaseSync(tmpPath);
+    const tables = test.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(t => t.name);
+    test.close();
+    const required = ['users', 'contacts', 'messages', 'settings'];
+    if (!required.every(t => tables.includes(t))) {
+      for (const s of ['', '-wal', '-shm']) { try { fs.unlinkSync(tmpPath + s); } catch {} }
+      return res.status(400).json({ error: 'La base de datos no tiene el esquema esperado.' });
+    }
+  } catch {
+    for (const s of ['', '-wal', '-shm']) { try { fs.unlinkSync(tmpPath + s); } catch {} }
+    return res.status(400).json({ error: 'Archivo SQLite inválido o corrupto.' });
+  }
+
+  // Swap safely: close the live handle and clear stale WAL/SHM so the new DB isn't corrupted.
+  closeDb();
+  for (const s of ['-wal', '-shm']) { try { fs.unlinkSync(DB_PATH + s); } catch {} }
+  for (const s of ['-wal', '-shm']) { try { fs.unlinkSync(tmpPath + s); } catch {} }
   fs.renameSync(tmpPath, DB_PATH);
   res.json({ ok: true, message: 'Base de datos restaurada. Reinicia el servidor para aplicar los cambios.' });
 });
@@ -188,7 +212,8 @@ router.put('/smtp', (req, res) => {
   const allowed = SMTP_KEYS;
   for (const key of allowed) {
     if (req.body[key] !== undefined && !(key === 'smtp_pass' && req.body[key] === '••••••')) {
-      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(req.body[key]));
+      const value = key === 'smtp_pass' ? encrypt(String(req.body[key])) : String(req.body[key]);
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
     }
   }
   res.json({ ok: true });
@@ -218,7 +243,7 @@ router.post('/smtp/test', async (req, res) => {
     const transporter = nodemailer.createTransport({
       host: pinnedHost, port: parseInt(cfg.smtp_port) || 587,
       secure: parseInt(cfg.smtp_port) === 465,
-      auth: cfg.smtp_user ? { user: cfg.smtp_user, pass: cfg.smtp_pass } : undefined,
+      auth: cfg.smtp_user ? { user: cfg.smtp_user, pass: decrypt(cfg.smtp_pass) } : undefined,
       tls: { servername: cfg.smtp_host },
       connectionTimeout: 10000, greetingTimeout: 10000,
     });
@@ -247,7 +272,7 @@ router.post('/outbound-webhooks', (req, res) => {
   if (!name || !url) return res.status(400).json({ error: 'name y url requeridos' });
   const db = getDb();
   const r = db.prepare('INSERT INTO outbound_webhooks (name, url, events, secret) VALUES (?, ?, ?, ?)')
-    .run(name, url, events, secret || null);
+    .run(name, url, events, secret ? encrypt(secret) : null);
   res.status(201).json(db.prepare('SELECT id, name, url, events, is_active, created_at FROM outbound_webhooks WHERE id = ?').get(r.lastInsertRowid));
 });
 
@@ -273,7 +298,7 @@ router.post('/outbound-webhooks/:id/test', async (req, res) => {
   const headers = { 'Content-Type': 'application/json', 'X-Rinran-Event': 'test' };
   if (hook.secret) {
     const crypto = require('crypto');
-    headers['X-Rinran-Signature'] = 'sha256=' + crypto.createHmac('sha256', hook.secret).update(body).digest('hex');
+    headers['X-Rinran-Signature'] = 'sha256=' + crypto.createHmac('sha256', decrypt(hook.secret)).update(body).digest('hex');
   }
   try {
     await assertPublicHttpUrl(hook.url);
@@ -292,7 +317,8 @@ router.post('/outbound-webhooks/:id/test', async (req, res) => {
 // ── API Keys ──────────────────────────────────────────────────────────────────
 router.get('/api-keys', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
-  res.json(getDb().prepare('SELECT id, name, key_prefix, scopes, is_active, last_used_at, created_at FROM api_keys WHERE created_by = ? ORDER BY id DESC').all(req.user.id));
+  // Any admin can see/manage all keys (avoids a revocation gap between admins).
+  res.json(getDb().prepare('SELECT id, name, key_prefix, scopes, is_active, last_used_at, created_at FROM api_keys ORDER BY id DESC').all());
 });
 
 router.post('/api-keys', (req, res) => {
@@ -311,7 +337,7 @@ router.post('/api-keys', (req, res) => {
 
 router.delete('/api-keys/:id', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
-  getDb().prepare('DELETE FROM api_keys WHERE id = ? AND created_by = ?').run(req.params.id, req.user.id);
+  getDb().prepare('DELETE FROM api_keys WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
