@@ -4,6 +4,7 @@ const express_ref = express;
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const { getDb } = require('../db');
+const { assertPublicHost, assertPublicHttpUrl, safeAxiosOptions } = require('../ssrfGuard');
 
 const DEFAULTS = {
   company_name: 'Rinran CRM',
@@ -203,12 +204,23 @@ router.post('/smtp/test', async (req, res) => {
   const cfg = {};
   rows.forEach(r => { cfg[r.key] = r.value; });
   if (!cfg.smtp_host) return res.status(400).json({ error: 'SMTP no configurado' });
+  // SSRF guard: reject internal/private SMTP targets, and pin the connection to the
+  // resolved public IP (with SNI = original host) so DNS can't rebind to an internal host.
+  let pinnedHost;
+  try {
+    const addrs = await assertPublicHost(cfg.smtp_host);
+    pinnedHost = addrs[0].address;
+  } catch {
+    return res.status(400).json({ error: 'Host SMTP no permitido' });
+  }
   try {
     const nodemailer = require('nodemailer');
     const transporter = nodemailer.createTransport({
-      host: cfg.smtp_host, port: parseInt(cfg.smtp_port) || 587,
+      host: pinnedHost, port: parseInt(cfg.smtp_port) || 587,
       secure: parseInt(cfg.smtp_port) === 465,
       auth: cfg.smtp_user ? { user: cfg.smtp_user, pass: cfg.smtp_pass } : undefined,
+      tls: { servername: cfg.smtp_host },
+      connectionTimeout: 10000, greetingTimeout: 10000,
     });
     await transporter.sendMail({
       from: cfg.smtp_from || cfg.smtp_user,
@@ -218,7 +230,8 @@ router.post('/smtp/test', async (req, res) => {
     });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[smtp] test error:', e.message);
+    res.status(502).json({ error: 'No se pudo enviar el correo de prueba. Revisa la configuración SMTP.' });
   }
 });
 
@@ -263,10 +276,16 @@ router.post('/outbound-webhooks/:id/test', async (req, res) => {
     headers['X-Rinran-Signature'] = 'sha256=' + crypto.createHmac('sha256', hook.secret).update(body).digest('hex');
   }
   try {
-    const r = await axios.post(hook.url, payload, { headers, timeout: 8000 });
+    await assertPublicHttpUrl(hook.url);
+  } catch {
+    return res.status(400).json({ ok: false, error: 'URL no permitida' });
+  }
+  try {
+    const r = await axios.post(hook.url, payload, { headers, timeout: 8000, ...safeAxiosOptions() });
     res.json({ ok: true, status: r.status });
   } catch (e) {
-    res.status(502).json({ ok: false, error: e.response ? `HTTP ${e.response.status}` : e.message });
+    // Keep the target's own HTTP status (useful, low-risk); hide raw connection errors (SSRF oracle).
+    res.status(502).json({ ok: false, error: e.response ? `HTTP ${e.response.status}` : 'Error de conexión' });
   }
 });
 
