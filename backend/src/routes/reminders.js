@@ -27,6 +27,7 @@ router.post('/', (req, res) => {
   const db = getDb();
   const { contact_id, title, note, due_at, wa_message } = req.body;
   if (!contact_id || !title || !due_at) return res.status(400).json({ error: 'contact_id, title, due_at required' });
+  if (!db.prepare('SELECT id FROM contacts WHERE id = ?').get(contact_id)) return res.status(404).json({ error: 'Contact not found' });
   const r = db.prepare('INSERT INTO reminders (contact_id, user_id, title, note, due_at, wa_message) VALUES (?, ?, ?, ?, ?, ?)').run(contact_id, req.user.id, title, note || null, due_at, wa_message || null);
   res.status(201).json(db.prepare(`
     SELECT r.*, c.name as contact_name, c.phone as contact_phone

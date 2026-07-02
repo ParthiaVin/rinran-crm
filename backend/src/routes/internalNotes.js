@@ -19,7 +19,7 @@ router.get('/', (req, res) => {
 // POST /contacts/:contactId/notes
 router.post('/', (req, res) => {
   const { content } = req.body;
-  if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
   const db = getDb();
   const r = db.prepare('INSERT INTO internal_notes (contact_id, user_id, content) VALUES (?, ?, ?)').run(req.params.contactId, req.user.id, content.trim());
   const note = db.prepare(`SELECT n.*, u.name as user_name FROM internal_notes n LEFT JOIN users u ON n.user_id = u.id WHERE n.id = ?`).get(r.lastInsertRowid);
