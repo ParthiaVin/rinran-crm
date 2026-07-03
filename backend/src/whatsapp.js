@@ -318,7 +318,7 @@ async function configureWebhook(webhookUrl) {
     const sessionKey = session.name || session.id;
     await axios.put(`${base()}/api/sessions/${sessionKey}`, {
       config: {
-        webhooks: [{ url: webhookUrl, events: ['message', 'message.ack'], enabled: true }],
+        webhooks: [{ url: webhookUrl, events: ['message', 'message.ack'], enabled: true, ...(process.env.WEBHOOK_HMAC_SECRET ? { hmac: { key: process.env.WEBHOOK_HMAC_SECRET } } : {}) }],
         noweb: { store: { enabled: true, fullSync: true } },
       }
     }, { headers: headers(), timeout: 10000 });

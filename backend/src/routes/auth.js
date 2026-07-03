@@ -7,7 +7,7 @@ const { getDb } = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { encrypt, decrypt } = require('../secretStore');
 
-const secret = () => process.env.JWT_SECRET || 'rinran-secret-change-me';
+const secret = () => process.env.JWT_SECRET;
 
 // POST /api/auth/login
 router.post('/login', (req, res) => {
