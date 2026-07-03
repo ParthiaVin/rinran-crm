@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const webpush = require('web-push');
 const { getDb } = require('../db');
+const { encrypt, decrypt } = require('../secretStore');
 
 let vapidReady = false;
 
@@ -9,12 +10,12 @@ function ensureVapid() {
   if (vapidReady) return;
   const db = getDb();
   let pub = db.prepare("SELECT value FROM settings WHERE key = 'vapid_public_key'").get()?.value;
-  let priv = db.prepare("SELECT value FROM settings WHERE key = 'vapid_private_key'").get()?.value;
+  let priv = decrypt(db.prepare("SELECT value FROM settings WHERE key = 'vapid_private_key'").get()?.value);
   if (!pub || !priv) {
     const keys = webpush.generateVAPIDKeys();
     pub = keys.publicKey; priv = keys.privateKey;
     db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('vapid_public_key', pub);
-    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('vapid_private_key', priv);
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('vapid_private_key', encrypt(priv));
     console.log('[push] Generated new VAPID keys');
   }
   webpush.setVapidDetails('mailto:admin@rinran.com', pub, priv);

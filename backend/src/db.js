@@ -2,6 +2,7 @@ const { DatabaseSync } = require('node:sqlite');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
+const { migrateExistingSecrets } = require('./secretStore');
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../data/rinran.db');
 
@@ -366,6 +367,14 @@ function initSchema() {
     db.prepare("INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)").run(email, hash, 'Admin');
     console.log(`[db] Admin user created: ${email}`);
   }
+
+  // Encrypt any pre-existing plaintext secrets at rest (idempotent).
+  migrateExistingSecrets(db);
 }
 
-module.exports = { getDb };
+// Close the cached handle (used by the DB-restore flow before swapping the file).
+function closeDb() {
+  if (db) { try { db.close(); } catch {} db = null; }
+}
+
+module.exports = { getDb, closeDb, DB_PATH };
