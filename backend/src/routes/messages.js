@@ -168,16 +168,19 @@ router.post('/send-voice', async (req, res) => {
 router.post('/send-location', async (req, res) => {
   const db = getDb();
   const { contact_id, latitude, longitude, title } = req.body;
-  if (!contact_id || latitude == null || longitude == null) return res.status(400).json({ error: 'contact_id, latitude, longitude required' });
+  const lat = Number(latitude), lng = Number(longitude);
+  if (!contact_id || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'contact_id and numeric latitude, longitude required' });
+  }
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
   if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
 
   const chatId = contact.wa_chat_id || toWaId(contact.phone);
-  const label = title || `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+  const label = title || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   let wa_message_id = null, status = 'sent';
   try {
-    const result = await sendLocation(chatId, latitude, longitude, title || '');
+    const result = await sendLocation(chatId, lat, lng, title || '');
     wa_message_id = result?.id ?? result?.response?.id?._serialized ?? null;
   } catch (e) { status = 'failed'; console.error('[messages] sendLocation error:', e.response?.data || e.message); }
 
@@ -453,7 +456,7 @@ router.post('/quick-send', async (req, res) => {
   if (!phone || !message) return res.status(400).json({ error: 'phone and message required' });
   const { parsePhone } = require('../phoneUtils');
   const { toWaId } = require('../whatsapp');
-  const parsed = parsePhone(phone);
+  const parsed = parsePhone(String(phone)); // coerce: a numeric phone would crash parsePhone's .trim()
   const chatId = toWaId(parsed.phone);
   let status = 'sent', wa_message_id = null;
   try {
