@@ -6,8 +6,11 @@ const { requireContactAccess } = require('../authz');
 // GET /inbox — conversations sorted by last message, with unread count + SLA flag
 router.get('/', (req, res) => {
   const db = getDb();
-  const { search, conv_status, assigned_to, page = 1, limit = 40 } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const { search, conv_status, assigned_to } = req.query;
+  // Sanitize pagination: non-numeric/zero/negative would bind NaN (SQLite 500) or a bad offset.
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit) || 40));
+  const offset = (page - 1) * limit;
 
   let where = ['c.is_deleted != 1', 'EXISTS (SELECT 1 FROM messages WHERE contact_id = c.id)'];
   const params = [];
@@ -79,7 +82,7 @@ router.get('/', (req, res) => {
     WHERE ${where.join(' AND ')}
     ORDER BY COALESCE(last_msg.sent_at, c.created_at) DESC
     LIMIT ? OFFSET ?
-  `).all(...params, parseInt(limit), offset);
+  `).all(...params, limit, offset);
 
   const total = db.prepare(`
     SELECT COUNT(*) as n FROM contacts c WHERE ${where.join(' AND ')}
@@ -98,7 +101,7 @@ router.get('/', (req, res) => {
     return { ...c, sla_breach };
   });
 
-  res.json({ conversations: result, total, page: parseInt(page), limit: parseInt(limit) });
+  res.json({ conversations: result, total, page, limit });
 });
 
 // PATCH /inbox/:contact_id/read — mark all inbound messages as read

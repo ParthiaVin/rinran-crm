@@ -30,7 +30,7 @@ router.patch('/:id', (req, res) => {
   const fields = [], params = [];
   if (label !== undefined) { fields.push('label = ?'); params.push(label); }
   if (color !== undefined) { fields.push('color = ?'); params.push(color); }
-  if (sort_order !== undefined) { fields.push('sort_order = ?'); params.push(sort_order); }
+  if (sort_order !== undefined) { fields.push('sort_order = ?'); params.push(parseInt(sort_order) || 0); }
   if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
   params.push(req.params.id);
   db.prepare(`UPDATE pipeline_stages SET ${fields.join(', ')} WHERE id = ?`).run(...params);

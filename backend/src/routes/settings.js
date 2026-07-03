@@ -125,7 +125,12 @@ router.post('/assignment-rules', (req, res) => {
   const db = getDb();
   const { name, category_id, agent_id, sort_order = 0 } = req.body;
   if (!agent_id) return res.status(400).json({ error: 'agent_id required' });
-  const r = db.prepare('INSERT INTO assignment_rules (name, category_id, agent_id, sort_order) VALUES (?, ?, ?, ?)').run(name || '', category_id || null, agent_id, sort_order);
+  let r;
+  try {
+    r = db.prepare('INSERT INTO assignment_rules (name, category_id, agent_id, sort_order) VALUES (?, ?, ?, ?)').run(name || '', category_id || null, agent_id, parseInt(sort_order) || 0);
+  } catch {
+    return res.status(400).json({ error: 'agent_id o category_id inválido' });
+  }
   res.status(201).json(db.prepare(`SELECT ar.*, cat.name as category_name, u.name as agent_name FROM assignment_rules ar LEFT JOIN categories cat ON ar.category_id = cat.id JOIN users u ON ar.agent_id = u.id WHERE ar.id = ?`).get(r.lastInsertRowid));
 });
 

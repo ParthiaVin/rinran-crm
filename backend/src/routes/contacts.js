@@ -134,7 +134,9 @@ router.get('/duplicates', (req, res) => {
 router.post('/merge', (req, res) => {
   const db = getDb();
   const { keep_id, merge_id } = req.body;
-  if (!keep_id || !merge_id || keep_id === merge_id) {
+  // Compare by value, not strict ===, so {keep_id:1, merge_id:"1"} (same row) is rejected
+  // instead of deleting the "kept" contact.
+  if (!keep_id || !merge_id || String(keep_id) === String(merge_id)) {
     return res.status(400).json({ error: 'keep_id and merge_id required and must differ' });
   }
   const keep = db.prepare('SELECT * FROM contacts WHERE id = ?').get(keep_id);
@@ -142,13 +144,22 @@ router.post('/merge', (req, res) => {
   if (!keep || !merge) return res.status(404).json({ error: 'Contact not found' });
   if (!canActOn(req, keep) || !canActOn(req, merge)) return res.status(403).json({ error: 'No autorizado' });
 
-  db.prepare('UPDATE messages SET contact_id = ? WHERE contact_id = ?').run(keep_id, merge_id);
-  db.prepare('UPDATE activity_log SET contact_id = ? WHERE contact_id = ?').run(keep_id, merge_id);
-  if (!keep.wa_chat_id && merge.wa_chat_id) {
-    db.prepare('UPDATE contacts SET wa_chat_id = ?, wa_session = ? WHERE id = ?').run(merge.wa_chat_id, merge.wa_session, keep_id);
+  // Run the multi-step merge atomically — a mid-way failure must not leave orphaned rows.
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE messages SET contact_id = ? WHERE contact_id = ?').run(keep_id, merge_id);
+    db.prepare('UPDATE activity_log SET contact_id = ? WHERE contact_id = ?').run(keep_id, merge_id);
+    if (!keep.wa_chat_id && merge.wa_chat_id) {
+      db.prepare('UPDATE contacts SET wa_chat_id = ?, wa_session = ? WHERE id = ?').run(merge.wa_chat_id, merge.wa_session, keep_id);
+    }
+    db.prepare('DELETE FROM contacts WHERE id = ?').run(merge_id);
+    logActivity(db, keep_id, req.user.id, 'merged', `Fusionado con ${merge.name} (${merge.phone})`);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    console.error('[contacts] merge error:', e.message);
+    return res.status(500).json({ error: 'No se pudo fusionar' });
   }
-  db.prepare('DELETE FROM contacts WHERE id = ?').run(merge_id);
-  logActivity(db, keep_id, req.user.id, 'merged', `Fusionado con ${merge.name} (${merge.phone})`);
   res.json({ ok: true, kept: keep_id, deleted: merge_id });
 });
 

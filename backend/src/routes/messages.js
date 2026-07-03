@@ -430,12 +430,13 @@ router.get('/broadcasts/:id/recipients', (req, res) => {
 // GET /messages/search — global search across messages
 router.get('/search', (req, res) => {
   const db = getDb();
-  const { q, limit = 30 } = req.query;
+  const { q } = req.query;
   if (!q?.trim()) return res.json([]);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 30)); // clamp: non-numeric would bind NaN (500)
 
   // Agents may only search within conversations assigned to them.
   const scope = isAgent(req) ? 'AND c.assigned_to = ?' : '';
-  const params = isAgent(req) ? [`%${q}%`, req.user.id, parseInt(limit)] : [`%${q}%`, parseInt(limit)];
+  const params = isAgent(req) ? [`%${q}%`, req.user.id, limit] : [`%${q}%`, limit];
   const results = db.prepare(`
     SELECT m.id, m.contact_id, m.direction, m.content, m.sent_at, m.media_type,
            c.name as contact_name, c.phone as contact_phone
