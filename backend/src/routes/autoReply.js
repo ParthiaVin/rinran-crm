@@ -3,6 +3,7 @@ const router = express.Router();
 const path = require('path');
 const fs = require('fs');
 const { getDb } = require('../db');
+const { requireAdmin } = require('../authz');
 
 const uploadsDir = path.join(__dirname, '../../../data/uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -23,7 +24,7 @@ router.get('/', (req, res) => {
   res.json(getDb().prepare('SELECT * FROM auto_reply_rules ORDER BY id').all());
 });
 
-router.post('/', (req, res) => {
+router.post('/', requireAdmin, (req, res) => {
   const db = getDb();
   const { name, trigger_type, trigger_value, response, file } = req.body;
   if (!name || !trigger_type) return res.status(400).json({ error: 'name, trigger_type required' });
@@ -42,7 +43,7 @@ router.post('/', (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM auto_reply_rules WHERE id = ?').get(r.lastInsertRowid));
 });
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAdmin, (req, res) => {
   const db = getDb();
   const { name, trigger_type, trigger_value, response, is_active, file, remove_attachment } = req.body;
   const fields = [], params = [];
@@ -73,7 +74,7 @@ router.patch('/:id', (req, res) => {
   res.json(db.prepare('SELECT * FROM auto_reply_rules WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', requireAdmin, (req, res) => {
   const db = getDb();
   const rule = db.prepare('SELECT attachment_url FROM auto_reply_rules WHERE id = ?').get(req.params.id);
   deleteAttachment(rule?.attachment_url);

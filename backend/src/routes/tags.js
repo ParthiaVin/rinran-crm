@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db');
+const { requireAdmin, requireContactAccess } = require('../authz');
 
 // GET /tags
 router.get('/', (req, res) => {
@@ -8,7 +9,7 @@ router.get('/', (req, res) => {
 });
 
 // POST /tags
-router.post('/', (req, res) => {
+router.post('/', requireAdmin, (req, res) => {
   const db = getDb();
   const { name, color = '#6366f1' } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -21,7 +22,7 @@ router.post('/', (req, res) => {
   }
 });
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAdmin, (req, res) => {
   const db = getDb();
   const { name, color } = req.body;
   const fields = [], params = [];
@@ -33,13 +34,13 @@ router.patch('/:id', (req, res) => {
   res.json(db.prepare('SELECT * FROM tags WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', requireAdmin, (req, res) => {
   getDb().prepare('DELETE FROM tags WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
 // GET /tags/contact/:contactId
-router.get('/contact/:contactId', (req, res) => {
+router.get('/contact/:contactId', requireContactAccess('contactId'), (req, res) => {
   const tags = getDb().prepare(`
     SELECT t.* FROM tags t
     JOIN contact_tags ct ON ct.tag_id = t.id
@@ -50,7 +51,7 @@ router.get('/contact/:contactId', (req, res) => {
 });
 
 // POST /tags/contact/:contactId — assign tag
-router.post('/contact/:contactId', (req, res) => {
+router.post('/contact/:contactId', requireContactAccess('contactId'), (req, res) => {
   const { tag_id } = req.body;
   if (!tag_id) return res.status(400).json({ error: 'tag_id required' });
   try {
@@ -60,13 +61,13 @@ router.post('/contact/:contactId', (req, res) => {
 });
 
 // DELETE /tags/contact/:contactId/:tagId — remove tag
-router.delete('/contact/:contactId/:tagId', (req, res) => {
+router.delete('/contact/:contactId/:tagId', requireContactAccess('contactId'), (req, res) => {
   getDb().prepare('DELETE FROM contact_tags WHERE contact_id = ? AND tag_id = ?').run(req.params.contactId, req.params.tagId);
   res.json({ ok: true });
 });
 
 // GET /tags/contact/:contactId/custom-fields — get custom field values
-router.get('/contact/:contactId/custom-fields', (req, res) => {
+router.get('/contact/:contactId/custom-fields', requireContactAccess('contactId'), (req, res) => {
   const values = getDb().prepare(`
     SELECT d.id as field_def_id, d.name, d.field_type, d.options_json, d.sort_order,
            v.value
@@ -78,7 +79,7 @@ router.get('/contact/:contactId/custom-fields', (req, res) => {
 });
 
 // PUT /tags/contact/:contactId/custom-fields — upsert custom field values
-router.put('/contact/:contactId/custom-fields', (req, res) => {
+router.put('/contact/:contactId/custom-fields', requireContactAccess('contactId'), (req, res) => {
   const db = getDb();
   const { values } = req.body; // [{ field_def_id, value }]
   if (!Array.isArray(values)) return res.status(400).json({ error: 'values[] required' });

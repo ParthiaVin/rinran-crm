@@ -5,6 +5,7 @@ const fs = require('fs');
 const { getDb } = require('../db');
 const { sendText, sendFile, sendVoice, sendLocation, sendSeen, sendTyping, downloadMedia, toWaId } = require('../whatsapp');
 const { fireOutboundWebhooks } = require('../outboundWebhooks');
+const { canActOnContact, isAgent } = require('../authz');
 
 const uploadsDir = path.join(__dirname, '../../../data/uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -29,6 +30,7 @@ router.post('/send', async (req, res) => {
 
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
 
   const interpolate = txt => (txt || '').replace(/\{\{nombre\}\}/g, contact.name || contact.phone).replace(/\{\{telefono\}\}/g, contact.phone);
   const finalMessage = interpolate(message);
@@ -75,6 +77,7 @@ router.post('/send-file', async (req, res) => {
 
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
 
   let savedFilename;
   try {
@@ -116,6 +119,7 @@ router.post('/send-voice', async (req, res) => {
   if (!contact_id || !data || !mimetype) return res.status(400).json({ error: 'contact_id, data, mimetype required' });
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
 
   const fs2 = require('fs');
   const { execSync } = require('child_process');
@@ -170,6 +174,7 @@ router.post('/send-location', async (req, res) => {
   }
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
 
   const chatId = contact.wa_chat_id || toWaId(contact.phone);
   const label = title || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
@@ -192,6 +197,7 @@ router.post('/send-seen', async (req, res) => {
   if (!contact_id) return res.status(400).json({ error: 'contact_id required' });
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
   try {
     await sendSeen(contact.phone, contact.wa_chat_id);
     res.json({ ok: true });
@@ -205,6 +211,7 @@ router.post('/typing', async (req, res) => {
   if (!contact_id) return res.status(400).json({ error: 'contact_id required' });
   const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  if (!canActOnContact(req, contact)) return res.status(403).json({ error: 'No autorizado' });
   try {
     await sendTyping(contact.phone, contact.wa_chat_id, !!active);
     res.json({ ok: true });
@@ -318,6 +325,8 @@ router.post('/:id/download-media', async (req, res) => {
   const db = getDb();
   const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.id);
   if (!msg) return res.status(404).json({ error: 'Message not found' });
+  const msgContact = db.prepare('SELECT assigned_to FROM contacts WHERE id = ?').get(msg.contact_id);
+  if (!canActOnContact(req, msgContact)) return res.status(403).json({ error: 'No autorizado' });
   if (!msg.wa_message_id) return res.status(400).json({ error: 'No WhatsApp message ID' });
   if (msg.media_url) return res.json({ media_url: msg.media_url, media_type: msg.media_type });
 
@@ -424,15 +433,18 @@ router.get('/search', (req, res) => {
   const { q, limit = 30 } = req.query;
   if (!q?.trim()) return res.json([]);
 
+  // Agents may only search within conversations assigned to them.
+  const scope = isAgent(req) ? 'AND c.assigned_to = ?' : '';
+  const params = isAgent(req) ? [`%${q}%`, req.user.id, parseInt(limit)] : [`%${q}%`, parseInt(limit)];
   const results = db.prepare(`
     SELECT m.id, m.contact_id, m.direction, m.content, m.sent_at, m.media_type,
            c.name as contact_name, c.phone as contact_phone
     FROM messages m
     JOIN contacts c ON m.contact_id = c.id
-    WHERE m.content LIKE ?
+    WHERE m.content LIKE ? ${scope}
     ORDER BY m.sent_at DESC
     LIMIT ?
-  `).all(`%${q}%`, parseInt(limit));
+  `).all(...params);
 
   res.json(results);
 });

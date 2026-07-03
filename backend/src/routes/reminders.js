@@ -34,8 +34,16 @@ router.post('/', (req, res) => {
   `).get(r.lastInsertRowid));
 });
 
+// A reminder may only be modified by its owner or an admin.
+function ownsReminder(req, res, next) {
+  const row = getDb().prepare('SELECT user_id FROM reminders WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (req.user.role !== 'admin' && row.user_id !== req.user.id) return res.status(403).json({ error: 'No autorizado' });
+  next();
+}
+
 // PATCH /reminders/:id
-router.patch('/:id', (req, res) => {
+router.patch('/:id', ownsReminder, (req, res) => {
   const db = getDb();
   const { done, title, note, due_at, wa_message } = req.body;
   const fields = [], params = [];
@@ -55,7 +63,7 @@ router.patch('/:id', (req, res) => {
 });
 
 // DELETE /reminders/:id
-router.delete('/:id', (req, res) => {
+router.delete('/:id', ownsReminder, (req, res) => {
   getDb().prepare('DELETE FROM reminders WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
