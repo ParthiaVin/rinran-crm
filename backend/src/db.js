@@ -362,10 +362,17 @@ function initSchema() {
   const existingUsers = db.prepare('SELECT COUNT(*) as n FROM users').get();
   if (existingUsers.n === 0) {
     const email = process.env.ADMIN_EMAIL || 'admin@rinran.com';
-    const password = process.env.ADMIN_PASSWORD || 'changeme123';
+    // Never seed a known default password. If ADMIN_PASSWORD is unset, generate a strong
+    // random one and print it once so the operator can log in and change it.
+    let password = process.env.ADMIN_PASSWORD;
+    const generated = !password;
+    if (generated) password = require('crypto').randomBytes(12).toString('base64url');
     const hash = bcrypt.hashSync(password, 10);
     db.prepare("INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)").run(email, hash, 'Admin');
     console.log(`[db] Admin user created: ${email}`);
+    if (generated) {
+      console.log(`[db] ⚠ Generated random admin password (set ADMIN_PASSWORD to control it): ${password}`);
+    }
   }
 
   // Encrypt any pre-existing plaintext secrets at rest (idempotent).

@@ -31,8 +31,24 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 const app = express();
 const auth = require('./middleware/auth');
+const helmet = require('helmet');
+const { rateLimit } = require('express-rate-limit');
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+// Behind nginx (one proxy hop) — needed for a correct client IP in rate limiting.
+app.set('trust proxy', 1);
+
+// Security headers. No CSP here: this backend serves the JSON API + uploaded images,
+// not the SPA HTML (nginx owns the app's CSP). Allow images to be embedded cross-origin.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS_ORIGIN may be a comma-separated allowlist; defaults to '*' (safe here — auth is a
+// Bearer token, not cookies, so a permissive origin does not expose an authenticated session).
+const corsOrigin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : '*';
+app.use(cors({ origin: corsOrigin }));
 app.use(morgan('dev'));
 
 // --- Body-size limits: a huge base64 body must not be buffered on public/normal routes ---
@@ -76,6 +92,18 @@ function verifyWebhookHmac(req, res, next) {
   }
   next();
 }
+
+// Brute-force protection on login. skipSuccessfulRequests => only FAILED attempts count,
+// so normal logins (even many from one office IP) are unaffected.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de inicio de sesión. Intenta de nuevo en unos minutos.' },
+});
+app.use('/api/auth/login', loginLimiter);
 
 // Public routes
 app.use('/api/auth', require('./routes/auth'));
