@@ -86,6 +86,7 @@ app.use('/uploads', express.static(uploadsDir, { maxAge: '7d' }));
 
 const { getDb } = require('./db');
 const axios = require('axios');
+const { assertPublicHttpUrl, safeAxiosOptions } = require('./ssrfGuard');
 
 // Photo proxy
 app.get('/api/contacts/:id/photo', async (req, res) => {
@@ -93,7 +94,8 @@ app.get('/api/contacts/:id/photo', async (req, res) => {
     const contact = getDb().prepare('SELECT profile_pic_url FROM contacts WHERE id = ?').get(req.params.id);
     if (!contact?.profile_pic_url) return res.status(404).end();
     if (contact.profile_pic_url.startsWith('/uploads/')) return res.redirect(contact.profile_pic_url);
-    const imgRes = await axios.get(contact.profile_pic_url, { responseType: 'stream', timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    await assertPublicHttpUrl(contact.profile_pic_url); // SSRF guard on the externally-fetched URL
+    const imgRes = await axios.get(contact.profile_pic_url, { responseType: 'stream', timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' }, ...safeAxiosOptions() });
     res.setHeader('Content-Type', imgRes.headers['content-type'] || 'image/jpeg');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     imgRes.data.pipe(res);
